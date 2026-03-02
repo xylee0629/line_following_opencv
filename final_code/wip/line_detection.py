@@ -11,6 +11,7 @@ import math
 # Camera variables
 frame_width = 640
 frame_height = 360
+frame_centre = frame_width / 2
 
 # Motor variables 
 frequency = 600
@@ -24,8 +25,9 @@ encoder_slots = 20
 
 # PID variables
 Kp = 0.005
-Kd = 0.0
+Kd = 0.02
 Ki = 0.0
+last_error = 0
 
 # Calculations
 circumference = math.pi * diameter
@@ -78,13 +80,12 @@ def move(left_pwm, right_pwm):
         ENB.value = abs(right_pwm)
     
 # PID calculation function
-def calculatePID(cx, frame_width, dutyCycle):
+def calculatePID(cx, error, dutyCycle):
     integral = 0
-    last_error = 0
+    global last_error
     
     # Calculate error
-    frame_centre = frame_width / 2
-    error = frame_centre - cx
+    error = cx - frame_centre
     
     # PID calculation
     P = Kp * error
@@ -113,9 +114,12 @@ picam2.start()
 
 time.sleep(1)
 
+left_flag = 0
+right_flag = 0
+
 try:
     while True:
-        servo.min()
+        #servo.min()
         frame = picam2.capture_array()
         
         # Converts frame to grayscale 
@@ -139,13 +143,35 @@ try:
                 cx = int(M["m10"] / M["m00"]) 
                 cy = int(M["m01"] / M["m00"]) 
                 
-                left_pwm, right_pwm = calculatePID(cx, frame_width, dutyCycle)
-                cv2.drawContours(frame, [largest_contour], -1, (0, 255, 0), 2)
-                cv2.circle(frame, (cx, cy), 5, (255, 0, 0), -1)
-                print(f"Target Speeds -> Left: {left_pwm:.2f} | Right: {right_pwm:.2f}")
-                move(left_pwm, right_pwm)
+                # Update memory flags based on line position
+                if cx <= frame_centre:
+                    left_flag = 1
+                    right_flag = 0
+                elif cx > frame_centre:
+                    left_flag = 0
+                    right_flag = 1
+            else:
+                continue
         else:
-            move(left_pwm, right_pwm)
+            if left_flag == 1:
+                cx = 0              # Set to most left
+            elif right_flag == 1:
+                cx = frame_width    # Set to most right
+            else:
+                cx = frame_centre   # Failsafe if lost on very first frame
+                
+        error = cx - frame_centre
+        
+        if error == 0:
+            left_pwm = dutyCycle
+            right_pwm = dutyCycle
+        else: 
+            left_pwm, right_pwm = calculatePID(cx, error, dutyCycle)
+            
+        cv2.drawContours(frame, [largest_contour], -1, (0, 255, 0), 2)
+        cv2.circle(frame, (cx, cy), 5, (255, 0, 0), -1)
+        print(f"Target Speeds -> Left: {left_pwm:.2f} | Right: {right_pwm:.2f}")
+        move(left_pwm, right_pwm)
             
         cv2.imshow("Original Frame", frame)
         # cv2.imshow("Threshold (Line is White)", thresh)
