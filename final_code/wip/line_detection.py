@@ -15,7 +15,7 @@ frame_centre = frame_width / 2
 
 # Motor variables 
 frequency = 600
-dutyCycle = 0.3
+dutyCycle = 0.5
 left_pwm = 0
 right_pwm = 0
 
@@ -24,9 +24,9 @@ diameter = 8.5
 encoder_slots = 20
 
 # PID variables
-Kp = 0.005
-Kd = 0.02
-Ki = 0.0
+Kp = 0.003
+Kd = 0.012
+Ki = 0.00
 last_error = 0
 
 # Calculations
