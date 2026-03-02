@@ -1,4 +1,4 @@
-# PID tuned: dutyCycle 0.5, Kp = 0.003, Kd = 0.012, Ki = 0
+# PID tuned: dutyCycle 0.5, Kp = 0.003, Kd = 0.008, Ki = 0
 
 import cv2
 from picamera2 import Picamera2
@@ -24,7 +24,7 @@ encoder_slots = 20
 
 # PID variables
 Kp = 0.003
-Kd = 0.013
+Kd = 0.008
 Ki = 0.0
 last_error = 0
 
