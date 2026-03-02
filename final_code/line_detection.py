@@ -1,5 +1,4 @@
-#research: instead of relying completely on PID, consider if the line exceeds a limit, it will turn completely right/ left 
-#reference other line following robots using openCV
+# PID tuned: dutyCycle 0.5, Kp = 0.003, Kd = 0.012, Ki = 0
 
 import cv2
 from picamera2 import Picamera2
@@ -25,8 +24,8 @@ encoder_slots = 20
 
 # PID variables
 Kp = 0.003
-Kd = 0.012
-Ki = 0.00
+Kd = 0.013
+Ki = 0.0
 last_error = 0
 
 # Calculations
@@ -116,10 +115,12 @@ time.sleep(1)
 
 left_flag = 0
 right_flag = 0
+robot_active = False
 
 try:
     while True:
         #servo.min()
+
         frame = picam2.capture_array()
         
         # Converts frame to grayscale 
@@ -170,8 +171,12 @@ try:
             
         cv2.drawContours(frame, [largest_contour], -1, (0, 255, 0), 2)
         cv2.circle(frame, (cx, cy), 5, (255, 0, 0), -1)
-        print(f"Target Speeds -> Left: {left_pwm:.2f} | Right: {right_pwm:.2f}")
-        move(left_pwm, right_pwm)
+        if robot_active:
+            print(f"Target Speeds -> Left: {left_pwm:.2f} | Right: {right_pwm:.2f}")
+            move(left_pwm, right_pwm)
+        else:
+            move(0, 0)
+            cv2.putText(frame, "STANDBY - Press 's' to start", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
             
         cv2.imshow("Original Frame", frame)
         # cv2.imshow("Threshold (Line is White)", thresh)
@@ -181,6 +186,9 @@ try:
         key = cv2.waitKey(1) & 0xFF	
         if key == ord("q"):
             break
+        elif key == ord("s"):
+            robot_active = True
+            print("Motors start")
     
 
 except KeyboardInterrupt:
