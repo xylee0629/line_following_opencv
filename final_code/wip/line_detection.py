@@ -98,8 +98,8 @@ def calculatePID(cx, error, dutyCycle):
     
     
     # Apply to motors
-    left_pwm = dutyCycle - control
-    right_pwm = dutyCycle + control
+    left_pwm = dutyCycle + control
+    right_pwm = dutyCycle - control
     
     left_pwm = max(-1.0, min(1.0, left_pwm))
     right_pwm = max(-1.0, min(1.0, right_pwm))
