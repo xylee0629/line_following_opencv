@@ -9,7 +9,7 @@ import math
 
 # Variables for motor control
 frequency = 500
-dutyCycle = 0.7
+dutyCycle = 0.3
 
 # Variables for encoder
 encoderState = {

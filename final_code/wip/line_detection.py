@@ -5,7 +5,7 @@ import cv2
 from picamera2 import Picamera2
 import numpy as np
 import time
-from gpiozero import Motor, DigitalInputDevice, PWMOutputDevice
+from gpiozero import Motor, DigitalInputDevice, PWMOutputDevice, Servo
 import math
 
 # Camera variables
@@ -14,7 +14,7 @@ frame_height = 360
 
 # Motor variables 
 frequency = 600
-dutyCycle = 0.4
+dutyCycle = 0.3
 left_pwm = 0
 right_pwm = 0
 
@@ -43,6 +43,7 @@ motorRight = Motor(6, 5)
 ENB = PWMOutputDevice(22,frequency=frequency)
 encoderLeft = DigitalInputDevice(27, pull_up=False) 
 encoderRight = DigitalInputDevice(21, pull_up=False) 
+servo = Servo(20)
 
 # Encoder functions
 def updateEncoder(side):
@@ -114,6 +115,7 @@ time.sleep(1)
 
 try:
     while True:
+        servo.min()
         frame = picam2.capture_array()
         
         # Converts frame to grayscale 
