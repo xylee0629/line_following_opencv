@@ -1,4 +1,5 @@
 # PID tuned: dutyCycle 0.5, Kp = 0.003, Kd = 0.008, Ki = 0
+# Block C tuning: blur(60, 225), Kp = 0.004, Kd = 0.004
 
 import cv2
 from picamera2 import Picamera2
@@ -23,8 +24,8 @@ diameter = 8.5
 encoder_slots = 20
 
 # PID variables
-Kp = 0.003
-Kd = 0.008
+Kp = 0.004
+Kd = 0.004
 Ki = 0.0
 last_error = 0
 
@@ -128,7 +129,7 @@ try:
         # Blurs the grayscaled image (research the parameters)
         blur = cv2.GaussianBlur(gray, (5, 5), 0)
         # Inverts the black line to white and find the threshold
-        ret, thresh = cv2.threshold(blur, 60, 255, cv2.THRESH_BINARY_INV)
+        ret, thresh = cv2.threshold(blur, 60, 225, cv2.THRESH_BINARY_INV)
         # Finds contours 
         contours, hierarchy = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
