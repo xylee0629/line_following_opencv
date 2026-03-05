@@ -23,33 +23,31 @@ Kp = 0.004
 Kd = 0.004
 Ki = 0.0
 last_error = 0
+integral = 0 
 
 # State Machine Flags
 robot_active = False
-robot_state = "FOLLOW_LINE"  # States: FOLLOW_LINE, IDENTIFY, WAIT_CLEAR
+# Added ALIGN_CARD to the states
+robot_state = "FOLLOW_LINE"  # States: FOLLOW_LINE, ALIGN_CARD, IDENTIFY, WAIT_CLEAR
 left_flag = 0
 right_flag = 0
 
-# ── FIX 4: Identification confirmation buffer ──────────────────────────────
-# A square must be consistently detected for this many consecutive frames
-# before triggering IDENTIFY, preventing a single-frame flicker from
-# causing a missed identification.
+# Identification confirmation buffer
 SQUARE_CONFIRM_FRAMES = 3
 square_confirm_counter = 0
 
-# ── FIX 4 & 3: WAIT_CLEAR timeout ─────────────────────────────────────────
-# If the obstacle is not cleared within this many seconds, resume anyway.
-WAIT_CLEAR_TIMEOUT = 10.0       # seconds
-WAIT_CLEAR_DEBOUNCE_FRAMES = 5  # path must be clear for N frames before resuming
+# WAIT_CLEAR timeout & cooldown
+WAIT_CLEAR_TIMEOUT = 10.0       
+WAIT_CLEAR_DEBOUNCE_FRAMES = 5  
 wait_clear_start_time = 0.0
 clear_frame_counter = 0
+ignore_card_until = 0.0         
 
 # GPIO pins
 motorLeft  = Motor(19, 13)
 ENA        = PWMOutputDevice(26, frequency=frequency)
 motorRight = Motor(6, 5)
 ENB        = PWMOutputDevice(22, frequency=frequency)
-
 
 # ==========================================
 # HELPER FUNCTIONS
@@ -76,8 +74,7 @@ def move(left_pwm_val, right_pwm_val):
         ENB.value = abs(right_pwm_val)
 
 def calculatePID(cx, error, current_dutyCycle):
-    integral = 0
-    global last_error
+    global last_error, integral 
     error = cx - frame_centre
     P = Kp * error
     integral += error
@@ -144,54 +141,34 @@ def merge_nearby_contours(contours, frame_shape, proximity_threshold=80):
             merged.append(cv2.convexHull(all_pts))
     return merged
 
-
-# ── Square-candidate selector ──────────────────────────────────────────────
-# The card is placed BESIDE the line, so it is always an isolated contour.
-# The line is black (near-zero saturation); all symbol cards are coloured
-# (meaningful saturation). We use mean saturation inside the contour's
-# bounding box as a hard gate — anything that reads as black/grey is
-# rejected immediately, before any shape checks run.
-# This is the most reliable discriminator: a corner, curve, or any part of
-# the black line will always fail the saturation check regardless of its
-# shape, aspect ratio, or size.
-
-MIN_SQUARE_AREA    = 3000   # px² — filters noise
-MAX_SQUARE_AREA    = 0.50   # fraction of frame area
-MIN_CARD_SATURATION = 40    # mean HSV-S inside ROI — below this = black/grey = line
+MIN_SQUARE_AREA    = 3000
+MAX_SQUARE_AREA    = 0.50
+MIN_CARD_SATURATION = 40
 
 def find_best_square_contour(contours, frame_area, frame_hsv):
-    """
-    Returns the largest isolated square-ish COLOURED contour, or None.
-    Rejects any contour whose ROI mean saturation is below MIN_CARD_SATURATION
-    so the black line is never mistaken for a symbol card regardless of shape.
-    """
     best_cnt  = None
     best_area = 0
 
     for cnt in contours:
         area = cv2.contourArea(cnt)
-
         if area < MIN_SQUARE_AREA or area > frame_area * MAX_SQUARE_AREA:
             continue
 
         x, y, w, h = cv2.boundingRect(cnt)
         aspect_ratio = float(w) / h if h != 0 else 0
-
         if not (0.70 <= aspect_ratio <= 1.43):
             continue
 
-        # ── Colour gate — reject black/grey contours (the line) ───────────
-        roi_sat = frame_hsv[y:y + h, x:x + w, 1]   # S channel of ROI
+        roi_sat = frame_hsv[y:y + h, x:x + w, 1]
         mean_sat = float(roi_sat.mean())
         if mean_sat < MIN_CARD_SATURATION:
-            continue  # black line or grey surface — not a coloured card
+            continue
 
         if area > best_area:
             best_area = area
             best_cnt  = cnt
 
     return best_cnt
-
 
 # ==========================================
 # LOAD TEMPLATES (GEOMETRY & ORB)
@@ -207,8 +184,7 @@ geo_templates = []
 print("\n--- LEARNING REFERENCE SHAPES ---")
 for ref_data in reference_files:
     ref_img = cv2.imread(ref_data["filepath"])
-    if ref_img is None:
-        continue
+    if ref_img is None: continue
     ref_hsv = cv2.cvtColor(ref_img, cv2.COLOR_BGR2HSV)
     _, ref_saturation, _ = cv2.split(ref_hsv)
     ref_blur = cv2.GaussianBlur(ref_saturation, (15, 15), 0)
@@ -237,9 +213,9 @@ for ref_data in reference_files:
         })
         print(f"  -> Learned: {name}")
 
-orb = cv2.ORB_create()
-bf  = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
-MIN_MATCH_COUNT = 6
+orb = cv2.ORB_create(nfeatures=800, fastThreshold=10, edgeThreshold=10)
+bf  = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+MIN_MATCH_COUNT = 14
 
 symbol_files = [
     {"filepath": '/home/raspberrypi/line_following_opencv/images/symbols/button.jpg',      "name": "Button"},
@@ -253,8 +229,7 @@ orb_templates = []
 print("\n--- LEARNING REFERENCE SYMBOLS ---")
 for sym_data in symbol_files:
     sym_img = cv2.imread(sym_data["filepath"], cv2.IMREAD_GRAYSCALE)
-    if sym_img is None:
-        continue
+    if sym_img is None: continue
     kp, des = orb.detectAndCompute(sym_img, None)
     if des is not None:
         orb_templates.append({"name": sym_data["name"], "kp": kp, "des": des})
@@ -281,26 +256,17 @@ try:
         frame     = picam2.capture_array()
         frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        # ------------------------------------------------------------------
-        # SHARED PREPROCESSING
-        # ── FIX 5: computed once per frame, reused by both pipelines ──────
-        # ------------------------------------------------------------------
+        # Shared Preprocessing
         frame_hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         _, frame_saturation, _ = cv2.split(frame_hsv)
         frame_blur_sym = cv2.GaussianBlur(frame_saturation, (15, 15), 0)
-        ret_sym, frame_thresh_sym = cv2.threshold(
-            frame_blur_sym, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
-        )
+        ret_sym, frame_thresh_sym = cv2.threshold(frame_blur_sym, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         kernel = np.ones((25, 25), np.uint8)
         frame_thresh_sym = cv2.morphologyEx(frame_thresh_sym, cv2.MORPH_CLOSE, kernel)
         if ret_sym < 40:
             frame_thresh_sym = np.zeros_like(frame_thresh_sym)
 
-        raw_contours, _ = cv2.findContours(
-            frame_thresh_sym, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
-        # proximity_threshold kept low (20px) — card is beside the line so
-        # they must stay as separate contours and never be bridged together
+        raw_contours, _ = cv2.findContours(frame_thresh_sym, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         frame_contours = merge_nearby_contours(raw_contours, frame.shape, proximity_threshold=20)
 
         square_contour_found = find_best_square_contour(frame_contours, frame_area, frame_hsv)
@@ -309,35 +275,32 @@ try:
         # STATE MACHINE
         # ------------------------------------------------------------------
         if robot_state == "FOLLOW_LINE":
+            
+            if time.time() < ignore_card_until:
+                square_contour_found = None
 
-            # ── FIX 4: require N consecutive frames before triggering ──────
             if square_contour_found is not None:
                 square_confirm_counter += 1
             else:
-                square_confirm_counter = 0  # reset on any frame without a square
+                square_confirm_counter = 0
 
             if square_confirm_counter >= SQUARE_CONFIRM_FRAMES:
                 square_confirm_counter = 0
                 move(0, 0)
-                robot_state = "IDENTIFY"
-                print("\n[!] Square confirmed for {} frames — stopping to identify...".format(
-                    SQUARE_CONFIRM_FRAMES))
-                time.sleep(0.3)
+                # Redirecting from FOLLOW_LINE to ALIGN_CARD
+                robot_state = "ALIGN_CARD"
+                print(f"\n[!] Square confirmed — aligning card in frame...")
                 continue
 
-            # Standard line following (no square confirmed yet)
+            # Standard line following
             blur_line  = cv2.GaussianBlur(frame_gray, (5, 5), 0)
             _, thresh_line = cv2.threshold(blur_line, 40, 255, cv2.THRESH_BINARY_INV)
 
-            # Mask out the card region so its black border doesn't
-            # distort the line centroid while the card is visible beside the line
             if square_contour_found is not None:
                 cx_card, cy_card, cw_card, ch_card = cv2.boundingRect(square_contour_found)
                 thresh_line[cy_card:cy_card + ch_card, cx_card:cx_card + cw_card] = 0
 
-            line_contours, _ = cv2.findContours(
-                thresh_line, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-            )
+            line_contours, _ = cv2.findContours(thresh_line, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
             if len(line_contours) > 0:
                 largest_line = max(line_contours, key=cv2.contourArea)
@@ -366,8 +329,39 @@ try:
                             (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
 
 
+        # NEW STATE: Visually servo the robot to center the card
+        elif robot_state == "ALIGN_CARD":
+            if square_contour_found is None:
+                print("[!] Lost card during alignment. Resuming line follow.")
+                robot_state = "FOLLOW_LINE"
+            else:
+                x, y, w, h = cv2.boundingRect(square_contour_found)
+                
+                # Define safe margins (20 pixels from top and bottom)
+                top_margin = 20
+                bottom_margin = frame_height - 20
+                
+                # Slower motor speed for precise alignment
+                align_speed = 0.35 
+
+                if y + h > bottom_margin:
+                    # Card is cut off at the bottom -> Drove too far, move backward
+                    move(-align_speed, -align_speed)
+                    cv2.putText(frame, "ALIGNING: Reversing...", (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 100, 255), 2)
+                    
+                elif y < top_margin:
+                    # Card is cut off at the top -> Backed up too far, creep forward
+                    move(align_speed, align_speed)
+                    cv2.putText(frame, "ALIGNING: Creeping Forward...", (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 100, 255), 2)
+                    
+                else:
+                    # Card is fully floating inside the safe frame!
+                    move(0, 0)
+                    print("[!] Card fully in frame. Commencing identification...")
+                    robot_state = "IDENTIFY"
+
+
         elif robot_state == "IDENTIFY":
-            # ── FIX 4: re-evaluate square on this frame; if gone, go back ─
             if square_contour_found is None:
                 print("[!] Square lost before identification. Resuming line follow.")
                 robot_state = "FOLLOW_LINE"
@@ -376,17 +370,15 @@ try:
                 area = cv2.contourArea(cnt)
                 x, y, w, h = cv2.boundingRect(cnt)
 
-                # --- Pipeline A: Geometry ------------------------------------
+                # --- Pipeline A: Geometry ---
                 live_hull      = cv2.convexHull(cnt)
                 live_hull_area = cv2.contourArea(live_hull)
                 live_solidity  = area / live_hull_area if live_hull_area > 0 else 0
                 rect_w, rect_h = cv2.minAreaRect(cnt)[1]
-                live_aspect_ratio = (max(rect_w, rect_h) / min(rect_w, rect_h)
-                                     if min(rect_w, rect_h) > 0 else 0)
+                live_aspect_ratio = (max(rect_w, rect_h) / min(rect_w, rect_h) if min(rect_w, rect_h) > 0 else 0)
                 live_extent    = area / (rect_w * rect_h) if (rect_w * rect_h) > 0 else 0
                 live_perimeter = cv2.arcLength(cnt, True)
-                live_circularity = ((4 * np.pi * area) / (live_perimeter ** 2)
-                                    if live_perimeter > 0 else 0)
+                live_circularity = ((4 * np.pi * area) / (live_perimeter ** 2) if live_perimeter > 0 else 0)
 
                 geo_best_name  = "Unknown"
                 geo_best_score = 1.5
@@ -402,7 +394,7 @@ try:
                         geo_best_score = total_score
                         geo_best_name  = template["name"]
 
-                # --- Pipeline B: ORB -----------------------------------------
+                # --- Pipeline B: ORB ---
                 y1 = max(0, y - 5);          y2 = min(frame_gray.shape[0], y + h + 5)
                 x1 = max(0, x - 5);          x2 = min(frame_gray.shape[1], x + w + 5)
                 roi_gray = frame_gray[y1:y2, x1:x2]
@@ -411,23 +403,18 @@ try:
                 orb_best_name    = "Unknown Symbol"
                 orb_best_inliers = 0
 
-                if live_des is not None and len(live_kp) > MIN_MATCH_COUNT:
+                if live_des is not None and len(live_kp) > 45:
                     for sym in orb_templates:
-                        if sym["des"] is None or len(sym["des"]) < 2:
-                            continue
-                        matches = bf.knnMatch(sym["des"], live_des, k=2)
-                        good_matches = [
-                            m for pair in matches if len(pair) == 2
-                            for m, n in [pair] if m.distance < 0.75 * n.distance
-                        ]
+                        if sym["des"] is None: continue
+                        
+                        matches = bf.match(sym["des"], live_des)
+                        good_matches = [m for m in matches if m.distance < 60]
+                        
                         if len(good_matches) >= MIN_MATCH_COUNT:
-                            src_pts = np.float32(
-                                [sym["kp"][m.queryIdx].pt for m in good_matches]
-                            ).reshape(-1, 1, 2)
-                            dst_pts = np.float32(
-                                [live_kp[m.trainIdx].pt for m in good_matches]
-                            ).reshape(-1, 1, 2)
+                            src_pts = np.float32([sym["kp"][m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+                            dst_pts = np.float32([live_kp[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
                             M_hom, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+                            
                             if M_hom is not None:
                                 valid_inliers = int(mask.ravel().sum())
                                 if valid_inliers > orb_best_inliers and valid_inliers >= MIN_MATCH_COUNT:
@@ -438,13 +425,11 @@ try:
                 if orb_best_name != "Unknown Symbol":
                     print(f"-> IDENTIFIED SYMBOL: {orb_best_name} (Inliers: {orb_best_inliers})")
                 elif geo_best_name != "Unknown":
-                    display_name = (f"Arrow {get_arrow_direction(cnt)}"
-                                    if "Arrow" in geo_best_name else geo_best_name)
+                    display_name = (f"Arrow {get_arrow_direction(cnt)}" if "Arrow" in geo_best_name else geo_best_name)
                     print(f"-> IDENTIFIED SHAPE: {display_name} (Score: {geo_best_score:.2f})")
                 else:
                     print("-> UNKNOWN SQUARE OBJECT.")
 
-                # ── FIX 3: record timestamp so WAIT_CLEAR can time out ─────
                 wait_clear_start_time = time.time()
                 clear_frame_counter   = 0
                 robot_state = "WAIT_CLEAR"
@@ -459,11 +444,10 @@ try:
             cv2.putText(frame, f"Timeout in {max(0, WAIT_CLEAR_TIMEOUT - elapsed):.1f}s",
                         (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
 
-            # ── FIX 3: debounced clear check ───────────────────────────────
             if square_contour_found is None:
                 clear_frame_counter += 1
             else:
-                clear_frame_counter = 0  # obstacle reappeared — reset debounce
+                clear_frame_counter = 0
 
             path_clear   = clear_frame_counter >= WAIT_CLEAR_DEBOUNCE_FRAMES
             timed_out    = elapsed >= WAIT_CLEAR_TIMEOUT
@@ -471,51 +455,47 @@ try:
             if path_clear or timed_out:
                 reason = "Path clear" if path_clear else "Timeout reached"
                 print(f"[!] {reason}. Resuming line follow.")
+                
+                if timed_out:
+                    ignore_card_until = time.time() + 3.0
+                    
                 clear_frame_counter = 0
                 robot_state = "FOLLOW_LINE"
 
         # ------------------------------------------------------------------
-        # DISPLAY — bounding boxes & overlays
+        # DISPLAY
         # ------------------------------------------------------------------
-
-        # LINE bounding box — drawn from the line-following threshold
-        # Recompute here only for display; result is already used above in PID
         blur_display = cv2.GaussianBlur(frame_gray, (5, 5), 0)
         _, thresh_display = cv2.threshold(blur_display, 40, 255, cv2.THRESH_BINARY_INV)
         if square_contour_found is not None:
             dx, dy, dw, dh = cv2.boundingRect(square_contour_found)
-            thresh_display[dy:dy + dh, dx:dx + dw] = 0  # mask card out of line display too
-        display_line_contours, _ = cv2.findContours(
-            thresh_display, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
+            thresh_display[dy:dy + dh, dx:dx + dw] = 0 
+        display_line_contours, _ = cv2.findContours(thresh_display, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if len(display_line_contours) > 0:
             largest_display_line = max(display_line_contours, key=cv2.contourArea)
             lx, ly, lw, lh = cv2.boundingRect(largest_display_line)
-            # Blue box around the line
             cv2.rectangle(frame, (lx, ly), (lx + lw, ly + lh), (255, 100, 0), 2)
-            cv2.putText(frame, "Line", (lx, ly - 8),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 100, 0), 2)
-            # Centroid dot on the line
+            cv2.putText(frame, "Line", (lx, ly - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 100, 0), 2)
             lM = cv2.moments(largest_display_line)
             if lM["m00"] != 0:
                 lcx = int(lM["m10"] / lM["m00"])
                 lcy = int(lM["m01"] / lM["m00"])
                 cv2.circle(frame, (lcx, lcy), 6, (255, 100, 0), -1)
 
-        # SYMBOL CARD bounding box
         if square_contour_found is not None:
             sx, sy, sw, sh = cv2.boundingRect(square_contour_found)
-
+            
+            # Dynamic Box Coloring Based on State
             if robot_state == "FOLLOW_LINE":
-                # Yellow while confirming — counter shown in label
                 card_colour = (0, 220, 255)
                 card_label  = f"Card? ({square_confirm_counter}/{SQUARE_CONFIRM_FRAMES})"
+            elif robot_state == "ALIGN_CARD":
+                card_colour = (255, 100, 255) 
+                card_label  = "Aligning..."
             elif robot_state == "IDENTIFY":
-                # Orange while actively identifying
                 card_colour = (0, 140, 255)
                 card_label  = "Identifying..."
             elif robot_state == "WAIT_CLEAR":
-                # Red once identified — waiting for removal
                 card_colour = (0, 0, 255)
                 card_label  = "Remove card"
             else:
@@ -523,12 +503,10 @@ try:
                 card_label  = "Card"
 
             cv2.rectangle(frame, (sx, sy), (sx + sw, sy + sh), card_colour, 2)
-            cv2.putText(frame, card_label, (sx, sy - 8),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, card_colour, 2)
+            cv2.putText(frame, card_label, (sx, sy - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.55, card_colour, 2)
 
-        # State label bottom-left
-        cv2.putText(frame, f"State: {robot_state}",
-                    (10, frame_height - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 0), 2)
+        cv2.putText(frame, f"State: {robot_state}", (10, frame_height - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 0), 2)
+        
         cv2.imshow("Robot View", frame)
 
         key = cv2.waitKey(1) & 0xFF
