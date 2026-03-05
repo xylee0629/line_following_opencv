@@ -35,36 +35,7 @@ def get_arrow_direction(arrow_contour):
             return "LEFT"
 
 # ==========================================
-# 2. SETUP ORB FOR TEXTURED SYMBOLS
-# ==========================================
-orb = cv2.ORB_create(nfeatures=500)
-bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
-
-# Add your textured symbol images here (e.g., Stop Sign, Turn Logo, etc.)
-symbol_files = [
-    {"filepath": '/home/raspberrypi/line_following_opencv/images/symbols/button.png', "name": "Button"},
-    {"filepath": '/home/raspberrypi/line_following_opencv/images/symbols/fingerprint.png', "name": "Fingerprint"},
-    {"filepath": '/home/raspberrypi/line_following_opencv/images/symbols/hazard.png', "name": "Hazard"},
-    {"filepath": '/home/raspberrypi/line_following_opencv/images/symbols/qr.png', "name": "QR Code"},
-    {"filepath": '/home/raspberrypi/line_following_opencv/images/symbols/recycle.png', "name": "Recycle"}
-]
-
-symbol_templates = []
-print("\n--- LEARNING SYMBOL TEXTURES (ORB) ---")
-
-for sym in symbol_files:
-    sym_img = cv2.imread(sym["filepath"], cv2.IMREAD_GRAYSCALE)
-    if sym_img is None:
-        print(f"ERROR: Could not load symbol at {sym['filepath']}. Skipping.")
-        continue
-        
-    kp, des = orb.detectAndCompute(sym_img, None)
-    if des is not None:
-        symbol_templates.append({"name": sym["name"], "des": des})
-        print(f"  -> Learned Symbol: {sym['name']} ({len(kp)} keypoints)")
-
-# ==========================================
-# 3. SETUP GEOMETRY FOR SHAPES & ARROWS
+# 2. SETUP GEOMETRY FOR SHAPES & ARROWS
 # ==========================================
 reference_files = [
     {
@@ -102,7 +73,6 @@ for ref_data in reference_files:
     ret, ref_threshold = cv2.threshold(ref_blur, 50, 255, cv2.THRESH_BINARY)
     
     # --- MATCHING THE LIVE KERNEL ---
-    # Use the same size you chose for the live feed (e.g., 25x25)
     kernel = np.ones((25, 25), np.uint8)
     ref_threshold = cv2.morphologyEx(ref_threshold, cv2.MORPH_CLOSE, kernel)
     # --------------------------------
@@ -152,7 +122,7 @@ for ref_data in reference_files:
 print(f"\nSuccessfully learned {len(templates)} master shape templates.")
 
 # ==========================================
-# 4. PICAMERA LIVE HYBRID FEED
+# 3. PICAMERA LIVE FEED
 # ==========================================
 picam2 = Picamera2()
 picam2.configure(picam2.create_video_configuration(main={"format": 'XRGB8888', "size": (640, 360)}))
@@ -163,8 +133,7 @@ print("\nStarting live feed. Press 'q' to quit.")
 while True:
     frame = picam2.capture_array()
     
-    # Needs grayscale for ORB, and HSV for Geometry thresholding
-    frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    # Needs HSV for Geometry thresholding
     frame_hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     _, frame_saturation, _ = cv2.split(frame_hsv)
     
@@ -172,7 +141,7 @@ while True:
     frame_blur = cv2.GaussianBlur(frame_saturation, (15, 15), 0) 
     ret, frame_threshold = cv2.threshold(frame_blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     
-    # Use a slightly smaller kernel so ORB can still see the internal lines
+    # Use kernel to close gaps
     kernel = np.ones((25, 25), np.uint8)
     frame_threshold = cv2.morphologyEx(frame_threshold, cv2.MORPH_CLOSE, kernel)
     
@@ -183,90 +152,53 @@ while True:
     frame_contours, _ = cv2.findContours(frame_threshold, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     for cnt in frame_contours:
-        # --- THE MISSING LINES ---
+        # --- NOISE FILTER ---
         area = cv2.contourArea(cnt)
         if area < 500: # Ignore tiny background noise
             continue
-        # -------------------------
             
         x, y, w, h = cv2.boundingRect(cnt)
-        is_symbol = False
         best_match_name = "Unknown"
-        best_match_score = 0.0 
+        best_match_score = 1.5 
         
         # ==========================================
-        # STAGE 1: TEXTURE TRIAGE (ORB)
+        # STAGE 1: GEOMETRY MATCHING
         # ==========================================
-        y1, y2 = max(0, y - 5), min(frame_gray.shape[0], y + h + 5)
-        x1, x2 = max(0, x - 5), min(frame_gray.shape[1], x + w + 5)
-        roi_gray = frame_gray[y1:y2, x1:x2]
+        live_hull = cv2.convexHull(cnt)
+        live_hull_area = cv2.contourArea(live_hull)
         
-        # Detect keypoints in the crop
-        live_kp, live_des = orb.detectAndCompute(roi_gray, None)
+        live_solidity = area / live_hull_area if live_hull_area > 0 else 0
+
+        live_rect = cv2.minAreaRect(cnt)
+        (rect_w, rect_h) = live_rect[1] 
+        live_aspect_ratio = max(rect_w, rect_h) / min(rect_w, rect_h) if min(rect_w, rect_h) > 0 else 0
         
-        is_symbol = False
-        
-        # If the crop has high texture (Keypoints > 20), it's a symbol.
-        # This PROTECTS the symbols from being misidentified as "Button".
-        if live_des is not None and len(live_kp) > 20:
-            best_orb_matches = 0
-            for sym in symbol_templates:
-                matches = bf.match(sym["des"], live_des)
-                good_matches = [m for m in matches if m.distance < 50]
-                
-                # Lowered to 10 for complex curves like the fingerprint
-                if len(good_matches) > 10 and len(good_matches) > best_orb_matches:
-                    best_orb_matches = len(good_matches)
-                    best_match_name = sym["name"]
-                    is_symbol = True
-        
-        # ==========================================
-        # STAGE 2: GEOMETRY (Only if NOT a symbol)
-        # ==========================================
-        if not is_symbol:
-            # Now, only solid shapes like the Arrow and Button reach this math.
-            # We keep the threshold strict to prevent "Button" from stealing Arrows.
-            best_match_score = 1.5 
+        live_rect_area = rect_w * rect_h
+        live_extent = area / live_rect_area if live_rect_area > 0 else 0
+
+        live_perimeter = cv2.arcLength(cnt, True)
+        live_circularity = (4 * np.pi * area) / (live_perimeter ** 2) if live_perimeter > 0 else 0
+
+        for template in templates:
+            hu_score = cv2.matchShapes(template["contour"], cnt, cv2.CONTOURS_MATCH_I1, 0)
+            solidity_diff = abs(template["solidity"] - live_solidity)
+            ar_diff = abs(template["aspect_ratio"] - live_aspect_ratio) * 0.5
+            circ_diff = abs(template["circularity"] - live_circularity)
+            extent_diff = abs(template["extent"] - live_extent)
             
-            live_hull = cv2.convexHull(cnt)
-            live_hull_area = cv2.contourArea(live_hull)
+            total_score = hu_score + (solidity_diff * 2.0) + ar_diff + circ_diff + (extent_diff * 3.0)
             
-            # Now 'area' exists for this math!
-            live_solidity = area / live_hull_area if live_hull_area > 0 else 0
-
-            live_rect = cv2.minAreaRect(cnt)
-            (rect_w, rect_h) = live_rect[1] 
-            live_aspect_ratio = max(rect_w, rect_h) / min(rect_w, rect_h) if min(rect_w, rect_h) > 0 else 0
-            
-            live_rect_area = rect_w * rect_h
-            live_extent = area / live_rect_area if live_rect_area > 0 else 0
-
-            live_perimeter = cv2.arcLength(cnt, True)
-            live_circularity = (4 * np.pi * area) / (live_perimeter ** 2) if live_perimeter > 0 else 0
-
-            for template in templates:
-                hu_score = cv2.matchShapes(template["contour"], cnt, cv2.CONTOURS_MATCH_I1, 0)
-                solidity_diff = abs(template["solidity"] - live_solidity)
-                ar_diff = abs(template["aspect_ratio"] - live_aspect_ratio) * 0.5
-                circ_diff = abs(template["circularity"] - live_circularity)
-                extent_diff = abs(template["extent"] - live_extent)
-                
-                total_score = hu_score + (solidity_diff * 2.0) + ar_diff + circ_diff + (extent_diff * 3.0)
-                
-                if total_score < best_match_score:
-                    best_match_score = total_score
-                    best_match_name = template["name"]
+            if total_score < best_match_score:
+                best_match_score = total_score
+                best_match_name = template["name"]
 
         # ==========================================
-        # STAGE 3: DRAWING & LABELING
+        # STAGE 2: DRAWING & LABELING
         # ==========================================
         if best_match_name != "Unknown":
             display_name = best_match_name
             
-            if is_symbol:
-                box_color = (255, 255, 0) # Cyan for Symbols
-                label = f"{display_name}"
-            elif "Arrow" in best_match_name:
+            if "Arrow" in best_match_name:
                 direction = get_arrow_direction(cnt)
                 display_name = f"Arrow {direction}"
                 box_color = (0, 0, 255) # Red for Arrows
@@ -285,17 +217,19 @@ while True:
             text_y = y + (h + text_height) // 2
             
             cv2.putText(frame, label, (text_x, text_y), font, font_scale, box_color, thickness)
+            
     # ==========================================
-    # 5. DISPLAY FEED & WINDOWS
+    # 4. DISPLAY FEED & WINDOWS
     # ==========================================
     for window_name, ref_img_display in reference_displays:
         cv2.imshow(window_name, ref_img_display)
 
     cv2.imshow("Threshold (Saturation)", frame_threshold) 
-    cv2.imshow("Live Hybrid Detection", frame)
+    cv2.imshow("Live Geometry Detection", frame)
 
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
         
 picam2.stop()       
 cv2.destroyAllWindows()
+
