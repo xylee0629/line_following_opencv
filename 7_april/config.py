@@ -13,8 +13,8 @@ FRAME_CENTRE = config.getfloat('Camera', 'frame_centre')
 
 FREQUENCY = config.getint('Motor', 'frequency')
 DUTY_CYCLE = config.getfloat('Motor', 'duty_cycle')
-KP = config.getfloat('Motor', 'kp')
-KD = config.getfloat('Motor', 'kd')
+KP = config.getfloat('Motor', 'Kp')
+KD = config.getfloat('Motor', 'Kd')
 
 ARROW_PATH = config.get('Path', 'Arrow')
 

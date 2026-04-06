@@ -36,7 +36,7 @@ class VisionAnalyser:
     # load and process orb template 
     def _load_orb_templates(self):
         templates = []
-        for sym in config.SYMBOL_FILES:
+        for sym in config.SYMBOL_PATHS:
             img = cv2.imread(sym["filepath"], cv2.IMREAD_GRAYSCALE)
             if img is not None:
                 kp, des = self.orb.detectAndCompute(img, None)
@@ -82,8 +82,8 @@ class VisionAnalyzer:
 
     def _load_arrow_templates(self):
         templates = []
-        if config.ARROW_IMG_PATH:
-            arrow_img = cv2.imread(config.ARROW_IMG_PATH)
+        if config.ARROW_PATH:
+            arrow_img = cv2.imread(config.ARROW_PATH)
             if arrow_img is not None:
                 _, sat, _ = cv2.split(cv2.cvtColor(arrow_img, cv2.COLOR_BGR2HSV))
                 _, thresh = cv2.threshold(cv2.GaussianBlur(sat, (15, 15), 0), 50, 255, cv2.THRESH_BINARY)
@@ -104,7 +104,7 @@ class VisionAnalyzer:
 
     def _load_orb_templates(self):
         templates = []
-        for sym in config.SYMBOL_FILES:
+        for sym in config.SYMBOL_PATHS:
             img = cv2.imread(sym["filepath"], cv2.IMREAD_GRAYSCALE)
             if img is not None:
                 kp, des = self.orb.detectAndCompute(img, None)
