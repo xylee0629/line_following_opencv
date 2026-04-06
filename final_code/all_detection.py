@@ -17,7 +17,7 @@ def get_arrow_direction(arrow_contour):
 
     com_x = M["m10"] / M["m00"]
     com_y = M["m01"] / M["m00"]
-
+ 
     dx = com_x - box_center_x
     dy = com_y - box_center_y
 
