@@ -6,9 +6,11 @@ class VisionAnalyzer:
     def __init__(self):
         self.orb = cv2.ORB_create()
         self.bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
-        self.MIN_MATCH_COUNT = 15
+        self.MIN_MATCH_COUNT = 10
         self.arrow_templates = self._load_arrow_templates()
         self.orb_templates = self._load_orb_templates()
+        
+        
         
     # load and process arrow template
     def _load_arrow_templates(self):
@@ -44,6 +46,8 @@ class VisionAnalyzer:
                     templates.append({"name": sym["name"], "kp": kp, "des": des})
         return templates
     
+    
+    
     def process_line(self, bottom_roi, left_flag, right_flag):
         bottom_hsv = cv2.cvtColor(bottom_roi, cv2.COLOR_BGR2HSV)
 
@@ -67,6 +71,9 @@ class VisionAnalyzer:
         contours_yellow, _ = cv2.findContours(mask_yellow, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
         contours_black, _ = cv2.findContours(mask_black, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
 
+        # Priority for Y junction
+        # the contours will split into two. based on arrow direction, the target coordinate should be set to the middle of the contour
+        
         # ==========================================
         # 4. PRIORITY LOGIC (Red -> Yellow -> Black)
         # ==========================================
@@ -112,6 +119,9 @@ class VisionAnalyzer:
         # Notice we are returning 4 items now instead of 3
         return cx, left_flag, right_flag, draw_data
     
+    
+    
+    
     def detect_symbol(self, top_roi):
         """Processes the symbol ROI and returns (symbol_name, bounding_box) or (None, None)."""
         top_gray = cv2.cvtColor(top_roi, cv2.COLOR_BGR2GRAY)
@@ -135,12 +145,18 @@ class VisionAnalyzer:
             # A. Check Arrow Templates
             if self.arrow_templates:
                 live_hull = cv2.convexHull(cnt)
-                live_rect = cv2.minAreaRect(cnt)
-                rect_w, rect_h = live_rect[1]
-                live_sol = area / cv2.contourArea(live_hull) if cv2.contourArea(live_hull) > 0 else 0
-                live_ar = max(rect_w, rect_h) / min(rect_w, rect_h) if min(rect_w, rect_h) > 0 else 0
-                live_ext = area / (rect_w * rect_h) if (rect_w * rect_h) > 0 else 0
-                live_circ = (4 * np.pi * area) / (cv2.arcLength(cnt, True) ** 2) if cv2.arcLength(cnt, True) > 0 else 0
+                hull_area = cv2.contourArea(live_hull)
+                rect_w, rect_h = cv2.minAreaRect(cnt)[1]
+                perimeter = cv2.arcLength(cnt, True)
+                
+                # Pre-calculate to avoid redundant operations
+                rect_area = rect_w * rect_h
+                min_dim = min(rect_w, rect_h)
+                
+                live_sol = area / hull_area if hull_area > 0 else 0
+                live_ar = max(rect_w, rect_h) / min_dim if min_dim > 0 else 0
+                live_ext = area / rect_area if rect_area > 0 else 0
+                live_circ = (12.566 * area) / (perimeter * perimeter) if perimeter > 0 else 0
 
                 best_score = 1.5
                 for temp in self.arrow_templates:
@@ -149,14 +165,14 @@ class VisionAnalyzer:
                     score += abs(temp["aspect_ratio"] - live_ar) * 0.5
                     score += abs(temp["circularity"] - live_circ)
                     score += abs(temp["extent"] - live_ext) * 3.0
-                    if score < best_score: best_score = score
+                    if score < best_score: 
+                        best_score = score
 
                 if best_score < 1.0:
                     direction = self._get_arrow_direction(cnt)
                     return f"ARROW_{direction}", box
                 
             # B. Check ORB Templates
-            # 5-Pixel Padding for ORB Context 
             y1 = max(0, y - 5)
             y2 = min(top_gray.shape[0], y + h + 5)
             x1 = max(0, x - 5)
@@ -168,6 +184,8 @@ class VisionAnalyzer:
             if live_des is not None and len(live_kp) > self.MIN_MATCH_COUNT:
                 best_inliers, best_name = 0, ""
                 
+                # ... [Keep your existing code above this] ...
+                
                 for sym in self.orb_templates:
                     if sym["des"] is None or len(sym["des"]) < 2:
                         continue
@@ -177,7 +195,12 @@ class VisionAnalyzer:
                     for match_pair in matches:
                         if len(match_pair) == 2:
                             m, n = match_pair
-                            if m.distance < 0.75 * n.distance:
+                            # ==========================================
+                            # FIX 1: Tighten Lowe's Ratio Test
+                            # Lowering 0.75 to 0.65 forces the algorithm to 
+                            # only accept matches that are UNAMBIGUOUSLY identical.
+                            # ==========================================
+                            if m.distance < 0.70 * n.distance:
                                 good.append(m)
                                 
                     if len(good) >= self.MIN_MATCH_COUNT:
@@ -187,24 +210,34 @@ class VisionAnalyzer:
                         
                         if M_hom is not None:
                             inliers = mask.sum()
-                            if inliers > best_inliers and inliers >= self.MIN_MATCH_COUNT:
+                            
+                            # ==========================================
+                            # FIX 2: The Inlier Ratio
+                            # Even if it finds 15 matches in the QR code, if the QR 
+                            # code generated 100 features, that is a terrible match rate. 
+                            # We demand at least 40% of the points agree on the geometry.
+                            # ==========================================
+                            inlier_ratio = inliers / len(good) if len(good) > 0 else 0
+                            
+                            # Added the inlier_ratio requirement here:
+                            if inliers > best_inliers and inliers >= self.MIN_MATCH_COUNT and inlier_ratio > 0.40:
                                 best_inliers, best_name = inliers, sym["name"]
                                 
                 if best_inliers > 0:
                     return best_name, box
-
         return None, None
     
     @staticmethod
     def _get_arrow_direction(arrow_contour):
         x, y, w, h = cv2.boundingRect(arrow_contour)
-        box_center_x, box_center_y = x + (w / 2.0), y + (h / 2.0)
         M = cv2.moments(arrow_contour)
         if M["m00"] == 0: return "UNKNOWN"
-        dx = (M["m10"] / M["m00"]) - box_center_x
-        dy = (M["m01"] / M["m00"]) - box_center_y
-        if abs(dy) > abs(dx): return "DOWN" if dy > 0 else "UP"
-        else: return "LEFT" if dx > 0 else "RIGHT"
+        
+        # Calculate horizontal displacement between center of mass and bounding box center
+        dx = (M["m10"] / M["m00"]) - (x + w / 2.0)
+        
+        # Compare to determine orientation
+        return "LEFT" if dx > 0 else "RIGHT"
 
     @staticmethod
     def _merge_nearby_contours(contours, proximity_threshold=60):
@@ -227,4 +260,3 @@ class VisionAnalyzer:
         for i, cnt in enumerate(contours):
             clusters.setdefault(find(i), []).append(cnt)
         return [cv2.convexHull(np.vstack(g)) if len(g) > 1 else g[0] for g in clusters.values()]
-    
