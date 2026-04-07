@@ -18,6 +18,8 @@ KD = config.getfloat('Motor', 'Kd')
 
 RED1_LOWER = [int(x) for x in config.get('Vision', 'red1_lower').split(',')]
 RED1_UPPER = [int(x) for x in config.get('Vision', 'red1_upper').split(',')]
+RED2_LOWER = [int(x) for x in config.get('Vision', 'red2_lower').split(',')]
+RED2_UPPER = [int(x) for x in config.get('Vision', 'red2_upper').split(',')]
 YELLOW_LOWER = [int(x) for x in config.get('Vision', 'yellow_lower').split(',')]
 YELLOW_UPPER = [int(x) for x in config.get('Vision', 'yellow_upper').split(',')]
 BLACK_LOWER = [int(x) for x in config.get('Vision', 'black_lower').split(',')]
