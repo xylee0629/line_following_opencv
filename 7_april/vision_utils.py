@@ -4,13 +4,11 @@ import config
 
 class VisionAnalyzer:
     def __init__(self):
-        self.orb = cv2.ORB_create()
+        self.orb = cv2.ORB_create(nfeatures=2000, scaleFactor=1.2)
         self.bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
         self.MIN_MATCH_COUNT = 10
         self.arrow_templates = self._load_arrow_templates()
         self.orb_templates = self._load_orb_templates()
-        
-        
         
     # load and process arrow template
     def _load_arrow_templates(self):
@@ -47,83 +45,129 @@ class VisionAnalyzer:
         return templates
     
     
-    
-    def process_line(self, bottom_roi, left_flag, right_flag):
+    def get_line_paths(self, bottom_roi):
+        """Step 1: Extracts valid contours based on color priority and checks for splits."""
         bottom_hsv = cv2.cvtColor(bottom_roi, cv2.COLOR_BGR2HSV)
 
-        # 1. Define HSV color ranges
+        # 1. Define strict HSV color ranges
         lower_black = np.array([0, 0, 0])
         upper_black = np.array([180, 255, 50])
-        
-        lower_red2 = np.array([160, 170, 100])
+        lower_red1 = np.array([0, 150, 130])
+        upper_red1 = np.array([10, 255, 255])
+        lower_red2 = np.array([170, 150, 130])
         upper_red2 = np.array([180, 255, 255])
-        
-        lower_yellow = np.array([22, 120, 100]) 
-        upper_yellow = np.array([38, 255, 255])
+        lower_yellow = np.array([24, 150, 130])
+        upper_yellow = np.array([36, 255, 255])
 
-        # 2. Create individual masks
+        # 2. Create individual masks & apply digital bezel
         mask_black = cv2.inRange(bottom_hsv, lower_black, upper_black)
-        mask_red = cv2.inRange(bottom_hsv, lower_red2, upper_red2)
+        mask_red = cv2.bitwise_or(cv2.inRange(bottom_hsv, lower_red1, upper_red1), 
+                                  cv2.inRange(bottom_hsv, lower_red2, upper_red2))
         mask_yellow = cv2.inRange(bottom_hsv, lower_yellow, upper_yellow)
 
-        # 3. Find contours
-        contours_red, _ = cv2.findContours(mask_red, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-        contours_yellow, _ = cv2.findContours(mask_yellow, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-        contours_black, _ = cv2.findContours(mask_black, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        h, w = mask_black.shape
+        cv2.rectangle(mask_black, (0, 0), (w, h), 0, thickness=35)
+        cv2.rectangle(mask_red, (0, 0), (w, h), 0, thickness=35)
+        cv2.rectangle(mask_yellow, (0, 0), (w, h), 0, thickness=35)
 
-        # Priority for Y junction
-        # the contours will split into two. based on arrow direction, the target coordinate should be set to the middle of the contour
-        
-        # ==========================================
-        # 4. PRIORITY LOGIC (Red -> Yellow -> Black)
-        # ==========================================
+        # 3. Find contours
+        contours_red, _ = cv2.findContours(cv2.GaussianBlur(mask_red, (5, 5), 0), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours_yellow, _ = cv2.findContours(cv2.GaussianBlur(mask_yellow, (5, 5), 0), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours_black, _ = cv2.findContours(cv2.GaussianBlur(mask_black, (5, 5), 0), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        # 4. Priority Logic
         target_contours = None
         detected_color = None
         MIN_AREA = 500 
 
         if len(contours_red) > 0 and max([cv2.contourArea(c) for c in contours_red]) > MIN_AREA:
             target_contours = contours_red
-            detected_color = (0, 0, 255) # Draw Red
+            detected_color = (0, 0, 255) 
         elif len(contours_yellow) > 0 and max([cv2.contourArea(c) for c in contours_yellow]) > MIN_AREA:
             target_contours = contours_yellow
-            detected_color = (0, 255, 255) # Draw Yellow
+            detected_color = (0, 255, 255) 
         elif len(contours_black) > 0 and max([cv2.contourArea(c) for c in contours_black]) > MIN_AREA:
             target_contours = contours_black
-            detected_color = (0, 255, 0) # Draw Green (visible against black line)
+            detected_color = (0, 255, 0) 
 
-        # ==========================================
-        # 5. MATH & DRAW DATA PACKAGING
-        # ==========================================
+# 5. Extract Valid Paths & Check for Split or Junction Shape
+        valid_paths = []
+        valid_junction = False
+        
+        if target_contours is not None:
+            valid_paths = [c for c in target_contours if cv2.contourArea(c) > MIN_AREA]
+            
+            # --- JUNCTION DETECTION LOGIC ---
+            
+            # Condition 1: The Clean Split (The camera sees two distinct paths)
+            if len(valid_paths) >= 2:
+                valid_junction = True
+                
+            # Condition 2: The "Blob" Junction (The camera sees one shape, but it's a fork or crossroad)
+            elif len(valid_paths) == 1:
+                main_contour = valid_paths[0]
+                
+                # Get Width
+                _, _, w, _ = cv2.boundingRect(main_contour)
+                
+                # Get Solidity
+                hull = cv2.convexHull(main_contour)
+                hull_area = cv2.contourArea(hull)
+                actual_area = cv2.contourArea(main_contour)
+                solidity = actual_area / hull_area if hull_area > 0 else 0
+                
+                # If the line spans 75% of the screen OR its solidity drops below 0.70
+                if w > config.FRAME_WIDTH * 0.75 or solidity < 0.70:
+                    valid_junction = True
+
+        return valid_paths, detected_color, valid_junction
+
+
+    def calculate_line_center(self, valid_paths, detected_color, left_flag, right_flag, arrow_direction=None):
+        """Step 2: Picks the correct path and calculates the steering centroid."""
+        # Memory Fallback
         if left_flag == 1: cx = 0
         elif right_flag == 1: cx = config.FRAME_WIDTH
         else: cx = config.FRAME_CENTRE
 
-        draw_data = None # Default to nothing if no line is found
+        draw_data = None 
 
-        if target_contours is not None:
-            largest_contour = max(target_contours, key=cv2.contourArea)
-            M = cv2.moments(largest_contour)
+        if len(valid_paths) > 0:
             
+            # --- THE ARROW SELECTION LOGIC ---
+            if len(valid_paths) >= 2 and arrow_direction is not None:
+                if arrow_direction == "LEFT":
+                    # Sort contours by X-coordinate and pick the one furthest to the left
+                    selected_contour = min(valid_paths, key=lambda c: cv2.boundingRect(c)[0])
+                elif arrow_direction == "RIGHT":
+                    # Sort contours by X-coordinate and pick the one furthest to the right
+                    selected_contour = max(valid_paths, key=lambda c: cv2.boundingRect(c)[0])
+                else:
+                    # Fallback if arrow is unknown: pick largest
+                    selected_contour = max(valid_paths, key=cv2.contourArea)
+            else:
+                # Default behavior: pick largest contour
+                selected_contour = max(valid_paths, key=cv2.contourArea)
+
+            # --- CENTROID MATH ---
+            M = cv2.moments(selected_contour)
             if M["m00"] != 0:
                 cx = int(M["m10"] / M["m00"])
-                cy = int(M["m01"] / M["m00"]) # Needed for drawing the dot
+                cy = int(M["m01"] / M["m00"]) 
 
                 if cx <= config.FRAME_CENTRE:  
                     left_flag, right_flag = 1, 0
                 elif cx > config.FRAME_CENTRE:  
                     left_flag, right_flag = 0, 1
                 
-                # Package the visual data to send to the main thread
-                draw_data = (largest_contour, detected_color, cx, cy)
+                draw_data = (selected_contour, detected_color, cx, cy)
                     
-        # Notice we are returning 4 items now instead of 3
         return cx, left_flag, right_flag, draw_data
     
     
     
-    
     def detect_symbol(self, top_roi):
-        """Processes the symbol ROI and returns (symbol_name, bounding_box) or (None, None)."""
+        """Processes the symbol ROI and returns the symbol_name or None."""
         top_gray = cv2.cvtColor(top_roi, cv2.COLOR_BGR2GRAY)
         _, top_sat, _ = cv2.split(cv2.cvtColor(top_roi, cv2.COLOR_BGR2HSV))
         ret_sym, top_thresh = cv2.threshold(cv2.GaussianBlur(top_sat, (15, 15), 0), 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
@@ -140,7 +184,7 @@ class VisionAnalyzer:
             if area < 500: continue
             
             x, y, w, h = cv2.boundingRect(cnt)
-            box = (x, y, w, h) # Save coordinates for the UI
+            box = (x, y, w, h)
             
             # A. Check Arrow Templates
             if self.arrow_templates:
@@ -149,7 +193,6 @@ class VisionAnalyzer:
                 rect_w, rect_h = cv2.minAreaRect(cnt)[1]
                 perimeter = cv2.arcLength(cnt, True)
                 
-                # Pre-calculate to avoid redundant operations
                 rect_area = rect_w * rect_h
                 min_dim = min(rect_w, rect_h)
                 
@@ -184,8 +227,6 @@ class VisionAnalyzer:
             if live_des is not None and len(live_kp) > self.MIN_MATCH_COUNT:
                 best_inliers, best_name = 0, ""
                 
-                # ... [Keep your existing code above this] ...
-                
                 for sym in self.orb_templates:
                     if sym["des"] is None or len(sym["des"]) < 2:
                         continue
@@ -195,11 +236,6 @@ class VisionAnalyzer:
                     for match_pair in matches:
                         if len(match_pair) == 2:
                             m, n = match_pair
-                            # ==========================================
-                            # FIX 1: Tighten Lowe's Ratio Test
-                            # Lowering 0.75 to 0.65 forces the algorithm to 
-                            # only accept matches that are UNAMBIGUOUSLY identical.
-                            # ==========================================
                             if m.distance < 0.70 * n.distance:
                                 good.append(m)
                                 
@@ -210,21 +246,14 @@ class VisionAnalyzer:
                         
                         if M_hom is not None:
                             inliers = mask.sum()
-                            
-                            # ==========================================
-                            # FIX 2: The Inlier Ratio
-                            # Even if it finds 15 matches in the QR code, if the QR 
-                            # code generated 100 features, that is a terrible match rate. 
-                            # We demand at least 40% of the points agree on the geometry.
-                            # ==========================================
                             inlier_ratio = inliers / len(good) if len(good) > 0 else 0
                             
-                            # Added the inlier_ratio requirement here:
                             if inliers > best_inliers and inliers >= self.MIN_MATCH_COUNT and inlier_ratio > 0.40:
                                 best_inliers, best_name = inliers, sym["name"]
                                 
                 if best_inliers > 0:
                     return best_name, box
+                    
         return None, None
     
     @staticmethod
