@@ -21,13 +21,13 @@ class WebStreamer:
             frame = self.frame_buffer.read()
             if frame is not None:
                 # Compress the frame to JPEG to send over Wi-Fi quickly
-                ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
                 if ret:
                     frame_bytes = buffer.tobytes()
                     # Yield the frame in byte format for the web browser
                     yield (b'--frame\r\n'
                            b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-            time.sleep(0.03) # Limit to ~30 FPS to save CPU
+            time.sleep(0.066) # Limit to ~15 FPS to save CPU
 
     def start(self, port=5000):
         """Starts the Flask server in a background thread."""
