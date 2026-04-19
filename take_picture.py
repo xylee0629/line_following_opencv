@@ -3,7 +3,7 @@ import cv2
 
 # Initialize and configure the camera
 picam2 = Picamera2()
-config = picam2.create_preview_configuration(main={"size": (640, 480)})
+config = picam2.create_preview_configuration(main={"size": (480, 360)})
 picam2.configure(config)
 
 # Start the camera pipeline

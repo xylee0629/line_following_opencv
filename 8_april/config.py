@@ -14,6 +14,7 @@ FRAME_CENTRE = config.getfloat('Camera', 'frame_centre')
 FREQUENCY = config.getint('Motor', 'frequency')
 DUTY_CYCLE = config.getfloat('Motor', 'duty_cycle')
 KP = config.getfloat('Motor', 'Kp')
+KI = config.getfloat('Motor', 'Ki')
 KD = config.getfloat('Motor', 'Kd')
 
 RED1_LOWER = [int(x) for x in config.get('Vision', 'red1_lower').split(',')]

@@ -37,7 +37,6 @@ class SharedState:
         
         # Symbol Detection State
         self.action_symbol = None
-        self.last_arrow = None 
 
         self.ui_symbol_name = None
         self.ui_symbol_box = None
@@ -64,9 +63,6 @@ class SharedState:
                 self.ui_symbol_name = symbol
                 self.ui_symbol_box = box
                 self.ui_symbol_timer = time.time() # Start the 1-second clock
-                
-                if str(symbol).startswith("ARROW_"):
-                    self.last_arrow = str(symbol).replace("ARROW_", "")
 
     def get_ui_symbol(self):
         with self.lock:
@@ -74,12 +70,6 @@ class SharedState:
             if time.time() - self.ui_symbol_timer < 1.0:
                 return self.ui_symbol_name, self.ui_symbol_box
             return None, None
-
-    def consume_last_arrow(self):
-        with self.lock:
-            arrow = self.last_arrow
-            self.last_arrow = None 
-            return arrow
 
     def consume_action_symbol(self):
         with self.lock:
@@ -94,49 +84,15 @@ class SharedState:
 def line_follower_thread(vision, motors, frame_buffer, shared_state, cli):
     left_flag, right_flag = 0, 0
     
-    # ==========================================
-    # NEW: The localized "Lock-In" memory
-    # ==========================================
-    active_turn = None 
-    
     while cli.app_running:
         frame = frame_buffer.read()
         if frame is not None:
             bottom_roi = frame[320:480, :]
             
-            # 1. Get the paths and check for a split
-            valid_paths, detected_color, valid_junction = vision.get_line_paths(bottom_roi)
+            # Process line using priority logic (Red -> Yellow -> Black)
+            cx, left_flag, right_flag, draw_data = vision.process_line(bottom_roi, left_flag, right_flag)
             
-            # ==========================================
-            # 2. Junction State Machine
-            # ==========================================
-            if valid_junction:
-                # If this is the VERY FIRST frame we see the split:
-                if active_turn is None:
-                    active_turn = shared_state.consume_last_arrow() 
-                    
-                    if active_turn:
-                        print(f"\n[NAV] Split Detected! Locking onto: {active_turn}")
-                    else:
-                        print(f"\n[NAV] Split Detected! No arrow memorized. Defaulting to largest.")
-                
-                # (If active_turn is NOT None, it silently keeps driving the active turn!)
-                
-            else:
-                # If we only see one line, but active_turn has data, we just finished a turn!
-                if active_turn is not None:
-                    print("[NAV] Junction cleared! Resuming standard tracking.")
-                    active_turn = None # Reset the lock for the next junction
-                    
-            # 3. Calculate steering (Pass the locked-in active_turn!)
-            cx, left_flag, right_flag, draw_data = vision.calculate_line_center(
-                valid_paths, 
-                detected_color, 
-                left_flag, 
-                right_flag, 
-                active_turn
-            )
-            
+            # Calculate PID and update steering
             left_pwm, right_pwm = motors.calculate_pid(cx)
             shared_state.update_steering(left_pwm, right_pwm, draw_data)
             
@@ -148,7 +104,7 @@ def symbol_detector_thread(vision, frame_buffer, shared_state, cli):
         if frame is not None:
             top_roi = frame[0:400, :]
             
-            # Catch both variables now!
+            # Catch both variables 
             symbol, box = vision.detect_symbol(top_roi)
             
             if symbol:
@@ -177,9 +133,27 @@ def motor_control_thread(motors, shared_state, cli):
                     print("[ACTION] Pausing for 2 seconds...")
                     time.sleep(2.0)
                 elif str(current_symbol).startswith("ARROW_"):
-                    print(f"[ACTION] Navigating: {current_symbol}")
+                    direction = str(current_symbol).replace("ARROW_", "")
+                    print(f"[ACTION] Blind turn sequence initiated: {direction}")
                     
-            # 2. Drive normally
+                    # A. Move forward slightly to center over the intersection
+                    motors.move(config.DUTY_CYCLE, config.DUTY_CYCLE)
+                    time.sleep(0.3) # <-- ADJUST this time based on robot speed
+                    
+                    # B. Execute the blind turn
+                    if direction == "LEFT":
+                        motors.move(-config.DUTY_CYCLE, config.DUTY_CYCLE)
+                    elif direction == "RIGHT":
+                        motors.move(config.DUTY_CYCLE, -config.DUTY_CYCLE)
+                        
+                    time.sleep(0.4) # <-- ADJUST this time to achieve a ~90 degree turn
+                    
+                    # C. Stop briefly to stabilize
+                    motors.stop()
+                    time.sleep(0.1)
+                    print("[ACTION] Turn complete. Snapping back to line.")
+                    
+            # 2. Drive normally using PID if no symbol is acting
             else:
                 motors.move(left_pwm, right_pwm)
         else:
@@ -196,15 +170,14 @@ def main():
     vision = VisionAnalyzer()
     cli = TerminalController()
     
-    frame_buffer = SharedFrameBuffer() # Holds clean frames for AI
-    stream_buffer = SharedFrameBuffer() # Holds drawn frames for the Web Streamer
+    frame_buffer = SharedFrameBuffer() 
+    stream_buffer = SharedFrameBuffer() 
     
     shared_state = SharedState()
     
     streamer = WebStreamer(stream_buffer)
     streamer.start(port=5000)
 
-    # Start CLI Listener (Terminal Input)
     cli.start()
 
     t1 = threading.Thread(target=line_follower_thread, args=(vision, motors, frame_buffer, shared_state, cli), daemon=True)
@@ -223,7 +196,6 @@ def main():
     try:
         print("[SYSTEM] Headless Architecture Running. Robot is fully autonomous.")
         
-        # The Main Loop now ONLY acts as a high-speed camera driver
         while cli.app_running:
             raw_frame = picam2.capture_array()
             raw_frame = cv2.cvtColor(raw_frame, cv2.COLOR_RGB2BGR)
@@ -231,11 +203,8 @@ def main():
             frame_buffer.write(raw_frame)
             display_frame = raw_frame.copy()
 
-            # ==========================================
-            # UI DRAWING LOGIC & MASTER SWITCHES
-            # ==========================================
-            SHOW_LINE_BOX = True   # Change to False to hide the green track box
-            SHOW_SYMBOL_BOX = True  # Change to False to hide the yellow symbol boxes
+            SHOW_LINE_BOX = True   
+            SHOW_SYMBOL_BOX = True  
             
             cv2.line(display_frame, (0, 320), (config.FRAME_WIDTH, 320), (255, 255, 255), 1)
 
@@ -247,7 +216,6 @@ def main():
                 
                 cv2.drawContours(bottom_display_roi, [contour], -1, color, 3)
                 
-                # Check the Master Switch before drawing the bounding box!
                 if SHOW_LINE_BOX:
                     x, y, w, h = cv2.boundingRect(contour)
                     cv2.rectangle(bottom_display_roi, (x, y), (x + w, y + h), (0, 255, 0), 2)
@@ -257,24 +225,18 @@ def main():
             # 2. DRAW SYMBOLS
             sym_name, sym_box = shared_state.get_ui_symbol()
             
-            # Check the Master Switch before drawing the symbol UI!
             if SHOW_SYMBOL_BOX and sym_name and sym_box is not None:
                 x, y, w, h = sym_box
                 cv2.rectangle(display_frame, (x, y), (x + w, y + h), (255, 255, 0), 3)
                 cv2.rectangle(display_frame, (x, y - 25), (x + len(sym_name) * 15, y), (255, 255, 0), -1)
                 cv2.putText(display_frame, sym_name, (x + 5, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
 
-            # Read and draw the frame dimensions
             frame_height, frame_width, _ = display_frame.shape
             cv2.putText(display_frame, f"Stream: {frame_width}x{frame_height}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
-            # Push the drawn frame to your web browser
             stream_buffer.write(display_frame)
-            
             time.sleep(0.005)
             
-            
-
     except KeyboardInterrupt:
         print("\nProgram stopped by Ctrl+C") 
     finally:
@@ -284,7 +246,6 @@ def main():
         t3.join(timeout=1.0)
         motors.cleanup()
         picam2.stop()
-        # No cv2 windows to destroy anymore!
 
 if __name__ == "__main__":
     main()
