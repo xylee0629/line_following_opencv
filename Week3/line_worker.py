@@ -1,143 +1,166 @@
-import cv2 as cv
+import cv2
 import numpy as np
 import time
 from multiprocessing import shared_memory
 import traceback
 
-from Week3.config import *
-from vision_utils import best_contour
+from config import *
+from vision_utils import bestContour
 
-def line_worker(
-    shm_name, frame_lock, line_ready_event, out_reset_pid, out_pid, out_cx, out_cy, 
-    out_has_line, out_lineArea, out_is_priority, out_turn_cmd, disp_shm_name, disp_lock
-):
-    try:
-        shm  = shared_memory.SharedMemory(name=shm_name)
-        fbuf = np.ndarray(FRAME_SHAPE, dtype=np.uint8, buffer=shm.buf)
-        disp_shm  = shared_memory.SharedMemory(name=disp_shm_name)
-        disp_buf  = np.ndarray(LINE_DISPLAY_SHAPE, dtype=np.uint8, buffer=disp_shm.buf)
+def line_worker(shm_name, frame_lock, line_ready_event, out_pid, out_reset_pid, out_cx, out_cy, out_turn_cmd, out_is_priority):
+    try: 
+        shm = shared_memory.SharedMemory(name=shm_name)
+        frame_bf = np.ndarray(FRAME_SHAPE, dtype=np.uint8, buffer=shm.buf)
 
-        pid_state = {'last_error': 0.0, 'integral': 0.0, 'last_time': time.monotonic()}
-        pid_out, cx, cy = 0.0, X_CENTRE, 150          
-        prev_fps_time, smoothed_fps = time.monotonic(), 0.0
-        lane_memory, red_left_votes, red_right_votes = None, 0, 0
-        was_on_red, was_on_yellow = False, False
+        lane_memory = None
+        left_red_votes, right_red_votes = 0, 0
+        was_on_red = False
+        was_on_yellow = False
+        pid_state = {
+                'last_error': 0.0,
+                'integral': 0.0,
+                'last_time': time.monotonic()
+            }
+        pid_out = 0.0
+        cx, cy = X_CENTRE, 150 # cy value need to check
 
-        def get_bbox(cnt): return cv.boundingRect(cnt) if cnt is not None else (0, 0, 0, 0)
-
+        def get_bbox(contour):
+            if contour is not None:
+                return cv2.boundingRect(contour)
+            else:
+                return (0, 0, 0, 0)
+        
         while True:
-            # Wait for a new frame efficiently
+            # Waits for the frame to clear
             line_ready_event.wait()
             line_ready_event.clear()
 
-            # Handle post-sleep PID resets to avoid windup
-            if out_reset_pid.value:
+            if out_reset_pid.value == True:
                 pid_state['last_error'] = 0.0
                 pid_state['integral'] = 0.0
                 pid_state['last_time'] = time.monotonic()
                 out_reset_pid.value = False
-
-            now = time.monotonic()
-            dt_fps = now - prev_fps_time
-            prev_fps_time = now
-            if dt_fps > 0: smoothed_fps = (0.9 * smoothed_fps) + (0.1 * (1.0 / dt_fps))
-
-            with frame_lock:
-                crop_rgb = fbuf[LINE_CROP_START:FRAME_HEIGHT, :].copy()
-
-            crop_bgr = cv.cvtColor(crop_rgb, cv.COLOR_RGB2BGR)
-            blur = cv.GaussianBlur(crop_rgb, (3, 3), 0)
-            hsv  = cv.cvtColor(blur, cv.COLOR_RGB2HSV)
             
-            cnts, follow_colour, draw_colour = [], "None", (0, 255, 0)
+            with frame_lock: 
+                frame = frame_bf.copy()
 
-            mask_red = cv.bitwise_or(cv.inRange(hsv, LINE_COLOUR_RANGES["Red"]["lower_1"], LINE_COLOUR_RANGES["Red"]["upper_1"]), 
-                                     cv.inRange(hsv, LINE_COLOUR_RANGES["Red"]["lower_2"], LINE_COLOUR_RANGES["Red"]["upper_2"]))
-            cnt_red, area_red = best_contour(mask_red)
+            # cap.read() reads in BGR format, need to convert from BGR2HSV
+            crop_bgr = frame[FRAME_HEIGHT/2:FRAME_HEIGHT, :]
+            crop_bgr_copy = crop_bgr.copy()
+            crop_blur = cv2.GaussianBlur(crop_bgr, (3,3), 0)
+            crop_hsv = cv2.cvtColor(crop_blur, cv2.COLOR_BGR2HSV)
+
+            active_contour = None
+            active_bbox = (0, 0, 0, 0)
+
+            mask_red = cv2.bitwise_or(cv2.inRange(crop_hsv, LINE_COLOUR_RANGES["Red"]["lower_1"], LINE_COLOUR_RANGES["Red"]["upper_1"]), 
+                                      cv2.inRange(crop_hsv, LINE_COLOUR_RANGES["Red"]["lower_2"], LINE_COLOUR_RANGES["Red"]["upper_2"]))
+            mask_yellow = cv2.inRange(crop_hsv, LINE_COLOUR_RANGES["Yellow"]["lower"], LINE_COLOUR_RANGES["Yellow"]["upper"])
+            mask_black = cv2.inRange(crop_hsv, LINE_COLOUR_RANGES["Black"]["lower"], LINE_COLOUR_RANGES["Black"]["upper"])
+
+            cnt_red, area_red = bestContour(mask_red)
+            cnt_yellow, area_yellow = bestContour(mask_yellow)
+            cnt_black, area_black = bestContour(mask_black)
+
             xr, yr, wr, hr = get_bbox(cnt_red)
+            xy, yy, wy, hy = get_bbox(cnt_yellow)
+            xb, yb, wb, hb = get_bbox(cnt_black)
 
-            if area_red > 4500 and hr > 20 and wr > 20:
-                cnts, follow_colour, draw_colour = [cnt_red], "Red", (0, 0, 255)
+            # check if the area is large enough, width and height of the box is more than minimum
+            if area_red > 4500 and wr > 135 and hr > 20:
+                active_contour = cnt_red
+                active_bbox = (xr, yr, wr, hr)
+                follow_colour = "Red"
+                draw_colour = (0, 0, 255)
+            elif area_yellow > 4500 and wy > 135 and hy > 20:
+                active_contour = cnt_yellow
+                active_bbox = (xy, yy, wy, hy)
+                follow_colour = "Yellow"
+                draw_colour = (0, 255, 255)
+            elif area_black > 4500 and wb > 135 and hb > 20:
+                active_contour = cnt_black
+                active_bbox = (xb, yb, wb, hb)
+                follow_colour = "Black"
+                draw_colour = (0, 255, 0)
             else:
-                mask_yellow = cv.inRange(hsv, LINE_COLOUR_RANGES["Yellow"]["lower"], LINE_COLOUR_RANGES["Yellow"]["upper"])
-                cnt_yellow, area_yellow = best_contour(mask_yellow)
-                xy, yy, wy, hy = get_bbox(cnt_yellow)
-                
-                if area_yellow > 4500 and hy > 135 and wy > 20:
-                    cnts, follow_colour, draw_colour = [cnt_yellow], "Yellow", (0, 255, 255)
-                    if not was_on_yellow: was_on_yellow = True
-                else:
-                    mask_black = cv.inRange(hsv, LINE_COLOUR_RANGES["Black"]["lower"], LINE_COLOUR_RANGES["Black"]["upper"])
-                    cnt_black, area_black = best_contour(mask_black)
-                    if area_black > 4500:
-                        cnts, follow_colour, draw_colour = [cnt_black], "Black", (0, 255, 0)
-                
-            if follow_colour != "Yellow": was_on_yellow = False
-            has_line, current_area = False, 0.0
-            
-            if cnts:
-                has_line = True
-                largest_contour = max(cnts, key=cv.contourArea)
-                current_area = cv.contourArea(largest_contour)
+                active_contour = None
+                follow_colour = "None"
+                draw_colour = (0, 0, 0)
 
-                x, y, w, h = cv.boundingRect(largest_contour)
-                M = cv.moments(largest_contour)
+            has_line = False
+            current_area = 0.0
+            if active_contour is not None:
+                has_line = True
+                current_area = cv2.contourArea(active_contour)
+                x, y, w, h = active_bbox
+                
+                M = cv2.moments(active_contour)
                 if M['m00'] != 0:
-                    cx, cy = int(M['m10'] / M['m00']), int(M['m01'] / M['m00'])
+                    cx = int(M['m10'] / M['m00'])
+                    cy = int(M['m01'] / M['m00'])
                 else:
                     cx, cy = x + (w // 2), y + (h // 2)
 
-                cv.drawContours(crop_bgr, [largest_contour], -1, draw_colour, 2)
-
-                error = X_CENTRE - cx
-                now   = time.monotonic()
-                dt    = now - pid_state['last_time']
-                pid_state['last_time'] = now
-                    
-                P = KP * error
-                pid_state['integral'] += error * dt
+                # Parameters: image to draw on, input contour, draw all contours, colour to use, thickness of line
+                cv2.drawContours(crop_bgr_copy, [active_contour], -1, draw_colour, 2)
                 
-                # Clamp the integral to prevent PID windup
+                # PID using the centre found from the contour
+                error = X_CENTRE - cx
+                now = time.monotonic()
+                dt = now - pid_state["last_time"]
+                pid_state["last_time"] = now
+
+                P = Kp * error
+                pid_state["integral"] += error * dt
                 pid_state['integral'] = max(-500, min(500, pid_state['integral']))
                 
-                I = KI * pid_state['integral']
-                D = (KD * (error - pid_state['last_error']) / dt) if dt > 0.01 else 0.0
+                I = Ki * pid_state['integral']
+                D = (Kd * (error - pid_state['last_error']) / dt) if dt > 0.01 else 0.0
                 pid_state['last_error'] = error
                 pid_out = P + I + D
             else:
-                pid_state['last_time'] = time.monotonic()
+                pid_state["last_time"] = time.monotonic()
 
+
+            # Line memory system
             if follow_colour == "Red":
-                if lane_memory is None:
-                    cx_blk = X_CENTRE  
+                if lane_memory is not None:
+                    cx_black = X_CENTRE
                     if cnt_black is not None and area_black > 1000:
-                        M_blk = cv.moments(cnt_black)
-                        if M_blk['m00'] != 0: cx_blk = int(M_blk['m10'] / M_blk['m00'])
-                    if cx < cx_blk: red_left_votes += 1
-                    else: red_right_votes += 1
-                    if red_left_votes > 3: lane_memory = "Left"
-                    elif red_right_votes >= 4: lane_memory = "Right"
+                        M_black = cv2.moments(cnt_black)
+                        if M_black['m00'] != 0:
+                            cx_black = int(M_black['m10'] / M_black['m00'])
+
+                    # Checks the number of red contour detected for a certain number of frames to prevent noise
+                    if cx > cx_black:
+                        left_red_votes += 1
+                    else:
+                        right_red_votes += 1
+                    if left_red_votes > 5:
+                        lane_memory = "Left"
+                    elif right_red_votes > 5:
+                        lane_memory = "Right"
+                    elif left_red_votes > 5 and right_red_votes > 5:
+                        lane_memory = "None"
                 was_on_red = True
-            elif follow_colour == "Black" and was_on_red:
-                if lane_memory == "Left": out_turn_cmd.value = 1  
-                elif lane_memory == "Right": out_turn_cmd.value = 2  
-                was_on_red, lane_memory, red_left_votes, red_right_votes = False, None, 0, 0
+            elif follow_colour == "Black":
+                if was_on_red:
+                    if lane_memory == "Left":
+                        out_turn_cmd.value = 1
+                    elif lane_memory == "Right":
+                        out_turn_cmd.value = 2
+
+                # Reset all variables after following black
+                was_on_red = False
+                lane_memory = None
+                left_red_votes, right_red_votes = 0,0
             else:
                 was_on_red = False
-                    
-            cv.circle(crop_bgr, (X_CENTRE, Y_CENTRE), 5, (0, 255, 255), -1)
-            cv.circle(crop_bgr, (cx, cy), 5, (0, 0, 255), -1)
-            cv.putText(crop_bgr, f"FPS: {int(smoothed_fps)}", (10, 30), cv.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
-
-            with disp_lock: np.copyto(disp_buf, crop_bgr)
-
+                        
             out_pid.value = pid_out
             out_cx.value = cx
             out_cy.value = cy
-            out_is_priority.value = (follow_colour in ["Red", "Yellow"])
-            out_lineArea.value = current_area 
-            out_has_line.value = has_line
+            out_is_priority.value = (follow_colour in ["Red", "Yellow"]) # outputs True if the follower colour is Red or Yellow
 
     except Exception as e:
-        print(f"\n[line_worker] CRASHED: {e}\n", flush=True)
         traceback.print_exc()
