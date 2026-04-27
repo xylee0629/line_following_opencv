@@ -4,7 +4,7 @@ import time
 from multiprocessing import shared_memory
 import traceback
 
-from config import *
+from Week3.config import *
 from vision_utils import best_contour
 
 def line_worker(
