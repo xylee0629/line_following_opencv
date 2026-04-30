@@ -5,8 +5,8 @@ from collections import deque
 from multiprocessing import shared_memory
 import traceback
 
-from week3.config import *
-from week3.vision_utils import orb_match_symbol, _detect_shape, _write_str
+from config import *
+from vision_utils import orb_match_symbol, _detect_shape, _write_str
 
 def image_worker(
     shm_name, frame_lock, img_ready_event, string_lock, out_found, out_label, out_instruction, 

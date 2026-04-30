@@ -1,6 +1,6 @@
 #motor.py
 from gpiozero import Motor, PWMOutputDevice
-import week3.config as config
+import config as config
 
 class MotorController:
     def __init__(self):

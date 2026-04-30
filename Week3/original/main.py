@@ -6,12 +6,12 @@ from multiprocessing import shared_memory
 from picamera2 import Picamera2
 
 # Import from modules
-from week3.config import *
-from week3.motor import MotorController 
-from week3.vision_utils import _read_str, _write_str
-from week3.line_worker import line_worker
-from week3.img_worker import image_worker
-from week3.webstreamer import run_streamer 
+from config import *
+from motor import MotorController 
+from vision_utils import _read_str, _write_str
+from line_worker import line_worker
+from img_worker import image_worker
+from webstreamer import run_streamer 
 
 # ══════════════════════════════════════════════════════════════
 # MOTOR HELPER

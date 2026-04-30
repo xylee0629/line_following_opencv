@@ -26,11 +26,11 @@ Y_CENTRE = int(FRAME_HEIGHT/ 2)
 DEBOUNCE_FRAMES = 2
 
 SYMBOL_DICT = {
-    0: (["latest/pushButton-1.jpg",    "latest/pushButton-2.jpg",    "latest/pushButton-3.jpg"],    35),
-    1: (["latest/fingerPrint-1.jpg",   "latest/fingerPrint-2.jpg",   "latest/fingerPrint-3.jpg"],   30),
-    2: (["latest/qrCode-1.jpg",        "latest/qrCode-2.jpg",        "latest/qrCode-3.jpg"],        25),
+    0: (["latest/pushButton-1.jpg",    "latest/pushButton-2.jpg",    "latest/pushButton-3.jpg"],    20),
+    1: (["latest/fingerPrint-1.jpg",   "latest/fingerPrint-2.jpg",   "latest/fingerPrint-3.jpg"],   18),
+    2: (["latest/qrCode-1.jpg",        "latest/qrCode-2.jpg",        "latest/qrCode-3.jpg"],        15),
     3: (["latest/recycleSymbol.jpg"], 25),
-    4: (["latest/hazardSymbol-1.jpg",  "latest/hazardSymbol-2.jpg",  "latest/hazardSymbol-3.jpg"],  30) # Lowered for motion blur
+    4: (["latest/hazardSymbol-1.jpg",  "latest/hazardSymbol-2.jpg",  "latest/hazardSymbol-3.jpg"],  18) # Lowered for motion blur
 }
 
 SYMBOL_NAME = {

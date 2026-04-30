@@ -4,8 +4,8 @@ import time
 from multiprocessing import shared_memory
 import traceback
 
-from week3.config import *
-from week3.vision_utils import best_contour
+from config import *
+from vision_utils import best_contour
 
 def line_worker(
     shm_name, frame_lock, line_ready_event, out_reset_pid, out_pid, out_cx, out_cy, 

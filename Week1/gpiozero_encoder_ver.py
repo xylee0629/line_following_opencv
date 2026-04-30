@@ -31,10 +31,7 @@ encoder_data = {
 # --- ENCODER LOGIC ---
 def updateEncoder(side):
     encoder_data[side] += 1
-    # Note: I commented out the print inside the callback to prevent 
-    # slowing down the loop during precise turns, but you can uncomment it if needed.
-    # print(f"Pulse {side}") 
-
+    
 encoderleft.when_activated = lambda: updateEncoder("left")
 encoderright.when_activated = lambda: updateEncoder("right")
 
