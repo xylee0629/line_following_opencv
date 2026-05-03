@@ -140,7 +140,7 @@ try:
             M = cv2.moments(largest_contour)
             
             if (M["m00"] != 0):
-                # divide to find centre coordinates 
+                # divide to find centre coordinates S
                 cx = int(M["m10"] / M["m00"]) 
                 cy = int(M["m01"] / M["m00"]) 
                 

@@ -8,13 +8,15 @@ import traceback
 from config import *
 from vision_utils import _write_str, orb_match_symbol, detect_arrow
 
-def image_worker(shm_name, frame_lock, img_ready_event, out_is_priority):
+def image_worker(shm_name, frame_lock, img_ready_event, string_lock, out_is_priority, out_found, out_instruction, out_instruction_ready, img_display_shm_name, img_display_lock):
     try:
         shm = shared_memory.SharedMemory(name=shm_name)
         frame_bf = np.ndarray(FRAME_SHAPE, dtype=np.uint8, buffer=shm.buf)
+        display_shm = shared_memory.SharedMemory(name=img_display_shm_name)
+        display_buf = np.ndarray(FRAME_SHAPE, dtype=np.uint8, buffer=display_shm.buf)
 
         # Initialise orb matching 
-        orb = cv2.ORB_create(nFeatures=500, nlevels=8, fastThreshold=17)
+        orb = cv2.ORB_create(nfeatures=500, nlevels=8, fastThreshold=17)
         bf  = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
 
         reference_data = []
@@ -40,7 +42,7 @@ def image_worker(shm_name, frame_lock, img_ready_event, out_is_priority):
             with frame_lock:
                 frame = frame_bf.copy()
 
-            display_bgr = frame.copy() # frame in format of BRG
+            display_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR) # frame in format of BRG
 
             # Local variables 
             current_priority = out_is_priority.value
@@ -52,14 +54,14 @@ def image_worker(shm_name, frame_lock, img_ready_event, out_is_priority):
             if not current_priority:
                 # Find possible symbols through colour first
                 blur = cv2.GaussianBlur(frame, (3,3), 0)
-
+                
                 hsv = cv2.cvtColor(blur, cv2.COLOR_BGR2HSV)
                 lab = cv2.cvtColor(blur, cv2.COLOR_BGR2LAB) # LAB is a colour space that has values for lightness, making it tolerable to light changes
 
                 # Create dict for possible candidates
                 all_candidates = []
                 for colour_name, parameters in IMAGE_COLOUR_RANGES.items():
-                    if parameters["space'"] == "HSV":
+                    if parameters["space"] == "HSV":
                         src = hsv
                     else:
                         src = lab
@@ -77,7 +79,7 @@ def image_worker(shm_name, frame_lock, img_ready_event, out_is_priority):
                 # Draw bounding rectangle around the region of interest
                 for area, cnt, colour in top_candidates:
                     if colour in colour_to_ids:
-                        grey = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY) 
+                        grey = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) 
                         x, y, w, h = cv2.boundingRect(cnt)
                         # include padding so that the full symbol is in the ROI
                         pad = 15
@@ -124,10 +126,25 @@ def image_worker(shm_name, frame_lock, img_ready_event, out_is_priority):
                     label_history.clear()
                     instruction = ""
 
-            if current_priority
+            if current_priority:
+                cv2.putText(display_bgr, "Line Following Only", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
+            if best_contour_for_display is not None:
+                x, y, w, h = cv2.boundingRect(best_contour_for_display)
+                cv2.rectangle(display_bgr, (x, y), (x + w, y + h), (255, 0, 0), 3)
+                if label: cv2.putText(display_bgr, label, (x, max(10, y - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+            elif label:
+                cv2.putText(display_bgr, label, (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
 
+            with img_display_lock:
+                np.copyto(display_buf, display_bgr)
 
-    except:
+            out_found.value = found
+            if instruction:
+                _write_str(out_instruction, instruction, 32, string_lock)
+                out_instruction_ready.value = True
 
-    finally:
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        traceback.print_exc()

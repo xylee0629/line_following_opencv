@@ -1,6 +1,5 @@
-#webstreamer.py
 from flask import Flask, Response, render_template_string
-import cv2 as cv
+import cv2 
 import numpy as np
 import time
 from multiprocessing import shared_memory
@@ -53,9 +52,9 @@ def generate_frames(shm_name, shape, lock):
         with lock:
             frame = buf.copy()
         
-        # 🌟 FIX: Compress the image! (40% quality reduces file size by ~80%)
-        encode_param = [int(cv.IMWRITE_JPEG_QUALITY), 40]
-        ret, buffer = cv.imencode('.jpg', frame, encode_param)
+        #Compress the image! (40% quality reduces file size by ~80%)
+        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 40]
+        ret, buffer = cv2.imencode('.jpg', frame, encode_param)
         
         if not ret:
             time.sleep(0.05)
@@ -66,7 +65,7 @@ def generate_frames(shm_name, shape, lock):
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
         
-        # 🌟 FIX: Cap the stream at ~15 FPS. 
+        # Cap the stream at ~15 FPS. 
         # This stops the network from flooding and causing browser lag.
         time.sleep(0.06)
 

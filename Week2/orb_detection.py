@@ -113,7 +113,7 @@ while True:
             for sym in symbol_templates:
                 if sym["des"] is None:
                     continue
-                    
+                    S
                 # 1. k-Nearest Neighbors Matching (find top 2 matches for each descriptor)
                 # Need at least 2 descriptors in the template to do knnMatch(k=2)
                 if len(sym["des"]) < 2: 

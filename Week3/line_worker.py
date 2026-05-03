@@ -7,10 +7,12 @@ import traceback
 from config import *
 from vision_utils import bestContour
 
-def line_worker(shm_name, frame_lock, line_ready_event, out_pid, out_reset_pid, out_cx, out_cy, out_turn_cmd, out_is_priority):
+def line_worker(shm_name, frame_lock, line_ready_event, out_pid, out_reset_pid, out_turn_cmd, out_is_priority, out_has_line, line_display_shm_name, line_display_lock):
     try: 
         shm = shared_memory.SharedMemory(name=shm_name)
         frame_bf = np.ndarray(FRAME_SHAPE, dtype=np.uint8, buffer=shm.buf)
+        display_shm = shared_memory.SharedMemory(name=line_display_shm_name)
+        display_buf = np.ndarray(FRAME_SHAPE, dtype=np.uint8, buffer=display_shm.buf)
 
         lane_memory = None
         left_red_votes, right_red_votes = 0, 0
@@ -43,10 +45,10 @@ def line_worker(shm_name, frame_lock, line_ready_event, out_pid, out_reset_pid, 
             
             with frame_lock: 
                 frame = frame_bf.copy()
+                BGR = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
-            # cap.read() reads in BGR format, need to convert from BGR2HSV
-            crop_bgr = frame[FRAME_HEIGHT/2:FRAME_HEIGHT, :]
-            crop_bgr_copy = crop_bgr.copy()
+            # convert rgb to bgr
+            crop_bgr = frame[int(FRAME_HEIGHT/2):FRAME_HEIGHT, :]
             crop_blur = cv2.GaussianBlur(crop_bgr, (3,3), 0)
             crop_hsv = cv2.cvtColor(crop_blur, cv2.COLOR_BGR2HSV)
 
@@ -102,7 +104,7 @@ def line_worker(shm_name, frame_lock, line_ready_event, out_pid, out_reset_pid, 
                     cx, cy = x + (w // 2), y + (h // 2)
 
                 # Parameters: image to draw on, input contour, draw all contours, colour to use, thickness of line
-                cv2.drawContours(crop_bgr_copy, [active_contour], -1, draw_colour, 2)
+                cv2.drawContours(crop_bgr, [active_contour], -1, draw_colour, 2)
                 
                 # PID using the centre found from the contour
                 error = X_CENTRE - cx
@@ -156,11 +158,19 @@ def line_worker(shm_name, frame_lock, line_ready_event, out_pid, out_reset_pid, 
                 left_red_votes, right_red_votes = 0,0
             else:
                 was_on_red = False
+
+            cv2.circle(crop_bgr, (X_CENTRE, Y_CENTRE), 5, (0, 255, 255), -1)
+            cv2.circle(crop_bgr, (cx, cy), 5, (0, 0, 255), -1)
+
+            with line_display_lock: 
+                np.copyto(display_buf, BGR)
                         
             out_pid.value = pid_out
-            out_cx.value = cx
-            out_cy.value = cy
             out_is_priority.value = (follow_colour in ["Red", "Yellow"]) # outputs True if the follower colour is Red or Yellow
+            out_has_line.value = has_line
+
+    except KeyboardInterrupt:
+        pass
 
     except Exception as e:
         traceback.print_exc()
